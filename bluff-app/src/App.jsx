@@ -24,7 +24,7 @@ export default function App() {
   // Load claims
   const load = useCallback(async () => {
     try {
-      const raw = await readContract(CONTRACT_ADDR, 'get_all_claims', [])
+      const raw = await readContract(CONTRACT_ADDR, 'get_all_claims', [], true)
       if (raw && raw !== '[]') {
         const parsed = JSON.parse(raw)
         setClaims([...parsed].reverse())

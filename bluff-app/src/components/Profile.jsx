@@ -19,9 +19,9 @@ export default function Profile({ account, onClose, onNotify, onPointsLoaded }) 
     setLoading(true)
     try {
       const [ptsRaw, statsRaw, un] = await Promise.all([
-        readContract(CONTRACT_ADDR, 'get_points',   [account]),
-        readContract(CONTRACT_ADDR, 'get_my_stats', [account]),
-        readContract(CONTRACT_ADDR, 'get_username', [account]),
+        readContract(CONTRACT_ADDR, 'get_points',   [account], true),
+        readContract(CONTRACT_ADDR, 'get_my_stats', [account], true),
+        readContract(CONTRACT_ADDR, 'get_username', [account], true),
       ])
       if (ptsRaw)   { const p = JSON.parse(ptsRaw); setBalance(p.balance); setClaimed(p.claimed); if(onPointsLoaded) onPointsLoaded(p.balance, p.claimed) }
       if (statsRaw) { const s = JSON.parse(statsRaw); setStats(s) }
@@ -46,7 +46,7 @@ export default function Profile({ account, onClose, onNotify, onPointsLoaded }) 
     if (!usernameInput.trim()) return
     setSavingUN(true); setUsernameMsg('')
     try {
-      const avail = await readContract(CONTRACT_ADDR, 'check_username', [usernameInput])
+      const avail = await readContract(CONTRACT_ADDR, 'check_username', [usernameInput], true)
       if (avail === 'TAKEN' && usernameInput.toLowerCase() !== username.toLowerCase()) {
         setUsernameMsg('Username already taken'); setSavingUN(false); return
       }
