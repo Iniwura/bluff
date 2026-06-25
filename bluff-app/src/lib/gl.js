@@ -1,3 +1,33 @@
+function glDecode(hexStr) {
+  const hex   = hexStr.startsWith('0x') ? hexStr.slice(2) : hexStr
+  if (!hex || hex.length === 0) return null
+  const bytes = new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b,16)))
+  const idx   = {i:0}
+  function uleb() {
+    let res=0n,acc=0n,go=true
+    while(go){const b=bytes[idx.i++];res+=BigInt(b&127)*(1n<<acc);acc+=7n;go=b>=128}
+    return res
+  }
+  function dec() {
+    const cur=uleb()
+    if(cur===0n)return null
+    if(cur===16n)return true
+    if(cur===8n)return false
+    const type=Number(cur&7n),rest=cur>>3n
+    if(type===4){const n=Number(rest),r=bytes.slice(idx.i,idx.i+n);idx.i+=n;return new TextDecoder().decode(r)}
+    if(type===1)return Number(rest)
+    if(type===2)return -1-Number(rest)
+    if(type===3){const n=Number(rest),r=bytes.slice(idx.i,idx.i+n);idx.i+=n;return r}
+    if(type===5){const r=[];let e=Number(rest);while(e-->0)r.push(dec());return r}
+    if(type===6){const r={};let e=Number(rest);while(e-->0){const kl=Number(uleb()),kb=bytes.slice(idx.i,idx.i+kl);idx.i+=kl;r[new TextDecoder().decode(kb)]=dec()}return r}
+    throw new Error('unknown gl type '+type)
+  }
+  const res=dec()
+  if(typeof res==='string')return res
+  if(res===null||res===undefined)return null
+  return JSON.stringify(res)
+}
+
 // ── GenLayer encoding (verified against genlayer-js) ─────────
 const _T = { SPECIAL:0, PINT:1, NINT:2, BYTES:3, STR:4, ARR:5, MAP:6 }
 const _S = { NULL:0, FALSE:8, TRUE:16, ADDR:24 }
@@ -56,6 +86,14 @@ function _glEncode(data) {
   return new Uint8Array(arr)
 }
 
+function encodeForRead(method, args=[]) {
+  const obj = {};
+  if (method) obj.method = method;
+  if (args && args.length > 0) obj.args = args;
+  const encoded = _glEncode(obj);
+  return '0x' + Array.from(encoded).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
 function _rlpBytes(data) {
   if (data.length === 1 && data[0] < 0x80) return data
   if (data.length <= 55) return new Uint8Array([0x80 + data.length, ...data])
@@ -108,7 +146,7 @@ export async function readContract(addr, method, args = [], useCache = false) {
     if (cached && Date.now() - cached.ts < _CACHE_TTL) return cached.val
   }
   const from = window._glAccount || '0x0000000000000000000000000000000000000000'
-  const data = encodeCalldataMsgpack(method, args, false)
+  const data = encodeCalldata(method, args, false)
   let lastErr
   for (let attempt = 0; attempt < 4; attempt++) {
     if (attempt > 0) {
@@ -123,25 +161,9 @@ export async function readContract(addr, method, args = [], useCache = false) {
       const raw = typeof result === 'string' ? result
         : result.data || result.output || result.result || result.return_value || ''
       if (!raw) return ''
-      const hex = raw.startsWith('0x') ? raw.slice(2) : raw
-      let decoded = ''
-      try {
-        const bytes = new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)))
-        let pos = 0, varint = 0, shift = 0
-        while (pos < bytes.length) {
-          const b = bytes[pos++]
-          varint |= (b & 0x7f) << shift
-          shift += 7
-          if (!(b & 0x80)) break
-        }
-        const typ = varint & 7
-        const len = varint >> 3
-        decoded = (typ === 4 && pos + len <= bytes.length)
-          ? new TextDecoder().decode(bytes.slice(pos, pos + len))
-          : new TextDecoder().decode(bytes)
-      } catch { decoded = String(raw) }
-      if (useCache) _readCache.set(cacheKey, { val: decoded, ts: Date.now() })
-      return decoded
+      const val = glDecode(raw)
+      if (useCache) _readCache.set(cacheKey, { val, ts: Date.now() })
+      return val
     } catch(e) {
       lastErr = e
       const msg = (e.message || '').toLowerCase()
@@ -156,7 +178,7 @@ export async function readContract(addr, method, args = [], useCache = false) {
 }
 export async function writeContract(contractAddr, account, method, args = []) {
   const cd   = encodeCalldata(method, args, false)
-  const CONS = '0x4F33a39DC5Ac7c5B9F2E7aB137F7c50b8f9B9339'
+  const CONS = '0x0112Bf6e83497965A5fdD6Dad1E447a6E004271D'
   const pad  = v => v.toString(16).padStart(64, '0')
   const padA = a => a.toLowerCase().replace('0x','').padStart(64,'0')
   const ch   = cd.startsWith('0x') ? cd.slice(2) : cd
@@ -176,11 +198,10 @@ export async function waitTx(hash, onSlow, tries = 30) {
     await new Promise(r => setTimeout(r, 3000))
     if (i === 9 && onSlow) onSlow()
     try {
-      const r = await rpcPost('eth_getTransactionReceipt', [hash])
-      if (r) {
-        if (r.status === '0x1' || r.status === 1) return
-        throw new Error('Transaction rejected by contract')
-      }
+      const r = rpcPost('gen_getTransactionStatus',[hash])
+      const st=(typeof r==='string'?r:r?.result||'').toUpperCase();
+      if(st==='ACCEPTED'||st==='FINALIZED')return;
+      if(st==='CANCELED'||st==='UNDETERMINED')throw new Error('Transaction '+st);
     } catch (e) {
       if (e.message.startsWith('Trans')) throw e
     }
